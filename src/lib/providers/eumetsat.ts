@@ -44,7 +44,9 @@ function leafLayers(xml: string): Layer[] {
     const crs = [...candidate.matchAll(/<(?:CRS|SRS)>([^<]+)<\/(?:CRS|SRS)>/g)].map((match) => match[1].trim());
     return id ? [{ id, title, abstract: text(candidate, /<Abstract>([\s\S]*?)<\/Abstract>/)?.replace(/\s+/g, " "), supportedTimes, timeDimension: timeMatch?.[1]?.trim(), crs, coverage: "EUMETView WMS coverage depends on the selected product.", attribution: "© EUMETSAT", legend: ["WMS visualization only — no pixel value is inferred."] }] : [];
   });
-  return layers.filter((layer) => layer.supportedTimes.length > 0 && layer.crs.includes("EPSG:3857"));
+  // CRS may be inherited from a parent WMS Layer and therefore absent on a leaf product.
+  // The safe GetMap handler is still the final authority for a requested CRS/image.
+  return layers.filter((layer) => layer.supportedTimes.length > 0);
 }
 
 function selectProducts(layers: Layer[]) {
