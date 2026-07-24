@@ -50,7 +50,10 @@ function leafLayers(xml: string): Layer[] {
 }
 
 function selectProducts(layers: Layer[]) {
-  const first = (expression: RegExp) => layers.find((layer) => expression.test(`${layer.title} ${layer.id}`))?.id;
+  const first = (expression: RegExp) => {
+    const matching = layers.filter((layer) => expression.test(`${layer.title} ${layer.id}`));
+    return (matching.find((layer) => /MSG\s*-\s*0\s*degree/i.test(layer.title)) ?? matching[0])?.id;
+  };
   return {
     natural: first(/natural\s+colou?r|rgb_natural/i),
     infrared: first(/(?:^|\s)ir\s*10\.?[58]\b|infrared|ir108|ir105/i),
