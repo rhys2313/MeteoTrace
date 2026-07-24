@@ -19,7 +19,7 @@ export type Product = {
 export type Frame = { id: string; time: string; label: string; index: number };
 
 export type SatelliteMode = "DEMO" | "LIVE" | "UNAVAILABLE";
-export type DataSource = "eumetsat" | "copernicus";
+export type DataSource = "eumetsat" | "rainviewer" | "copernicus";
 export type ComparisonMode = "split" | "horizontal" | "opacity" | "blink" | "difference";
 export type SelectionMode = "point" | "bbox" | "view";
 

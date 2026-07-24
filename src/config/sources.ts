@@ -3,12 +3,14 @@ export const EUMETSAT_WMS = {
   version: "1.3.0",
   crs: "EPSG:3857",
   format: "image/jpeg",
-  configuredLayer: "msg_fes:rgb_natural",
-  status: "LIVE" as const,
-  note: "Official EUMETView WMS. Availability is checked at request time; unavailable imagery is never replaced with simulated observations.",
-};
+  officialDocumentation: "https://user.eumetsat.int/resources/user-guides/eumet-view-user-guide",
+} as const;
 
-export const EUMETSAT_LAYERS = ["msg_fes:rgb_natural", "msg_fes:rgb_airmass", "msg_fes:ir108"] as const;
+export const RAINVIEWER = {
+  metadataEndpoint: "https://api.rainviewer.com/public/weather-maps.json",
+  officialDocumentation: "https://www.rainviewer.com/api/weather-maps-api.html",
+  attribution: "Weather data by RainViewer",
+} as const;
 
 export const COPERNICUS = {
   tokenEndpoint: "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token",
