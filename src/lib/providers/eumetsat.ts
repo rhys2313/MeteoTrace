@@ -6,6 +6,8 @@ export type EumetsatCatalog = {
   fetchedAt: string;
   products: Layer[];
   preferred: { natural?: string; infrared?: string; precipitation?: string };
+  /** Server-only validation list; the public catalog route deliberately omits it. */
+  allowedLayerIds: string[];
 };
 
 let cachedCatalog: { value: EumetsatCatalog; expiresAt: number } | undefined;
@@ -67,7 +69,7 @@ export function parseEumetsatCapabilities(xml: string): EumetsatCatalog {
   const preferredIds = new Set(Object.values(preferred).filter(Boolean));
   const products = allLayers.filter((layer) => preferredIds.has(layer.id));
   if (!preferred.natural || !preferred.infrared || products.length < 2) throw new Error("EUMETView catalogue did not expose the required timed satellite products.");
-  return { fetchedAt: new Date().toISOString(), products, preferred };
+  return { fetchedAt: new Date().toISOString(), products, preferred, allowedLayerIds: allLayers.map((layer) => layer.id) };
 }
 
 export async function getEumetsatCatalog() {

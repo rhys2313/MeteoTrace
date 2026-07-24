@@ -5,10 +5,10 @@ import { validateWmsParams, wmsSearchParams } from "@/lib/wms";
 export const runtime = "nodejs";
 
 export async function GET(request: NextRequest) {
-  const requestName = request.nextUrl.searchParams.get("request")?.toLowerCase();
+  const requestName = (request.nextUrl.searchParams.get("request") ?? request.nextUrl.searchParams.get("REQUEST"))?.toLowerCase();
   try {
     const catalog = requestName === "getmap" ? await getEumetsatCatalog() : undefined;
-    const params = validateWmsParams(request.nextUrl.searchParams, catalog?.products.map((product) => product.id));
+    const params = validateWmsParams(request.nextUrl.searchParams, catalog?.allowedLayerIds);
     const upstream = new URL(EUMETSAT_WMS.endpoint); upstream.search = wmsSearchParams(params).toString();
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 12_000);
     try {
