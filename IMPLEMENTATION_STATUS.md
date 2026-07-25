@@ -1,51 +1,51 @@
 # MeteoTrace — implementation status
 
-Updated: 2026-07-25 (Stage 1 only)
+Updated: 2026-07-25 — Stage 1.5 analysis tools only
 
-## Implemented in this correction
+## Delivered
 
-- RainViewer metadata and EUMETView catalog are fetched independently. A slow or failed EUMETView catalog no longer delays a usable RainViewer layer.
-- Provider API state is distinct from browser rendering state: `API_LOADING`, `API_LIVE`, `API_ERROR` are shown separately from `LAYER_LOADING`, `LAYER_LIVE`, `NO_ECHOES`, `NO_COVERAGE`, and `LAYER_ERROR`.
-- The OpenLayers weather layer is stable across ordinary React state updates. It is recreated only when source/frame/product changes; opacity changes update the existing layer.
-- RainViewer diagnostics expose selected UTC timestamp, starts/successes/errors, detected echo pixels, visible flag, opacity, z-index, and the non-secret XYZ URL.
-- Weather raster colors are no longer suppressed by the map-wide grayscale/brightness CSS filter. Weather layers are created with `visible=true`, `zIndex=10`; the marker is at z-index 20.
-- EUMETView GetMap recognizes both `request` and OpenLayers’ `REQUEST`, validates against all layer IDs present in the live GetCapabilities response, and retains strict upstream, timeout, image-content-type, and parameter controls.
-- `/api/version` adds the short Vercel/Git commit identifier to the UI diagnostics.
+- Stage 1 LIVE core remains limited to the public RainViewer radar and official EUMETView WMS. No FMI, DWD, OPERA, commercial, contract-only, lightning, or other new providers were added.
+- RainViewer now uses its public coverage-mask tiles in addition to radar tiles. The interface distinguishes API availability from visual states: `LAYER_LIVE`, `NO_ECHOES`, `NO_COVERAGE`, and `LAYER_ERROR`. The mask is optional on the map and is evaluated for the visible area; it is not a claim of coverage throughout Russia.
+- The radar panel states that the composite is a visual reflectivity product, not a point measurement. It shows frame UTC time, tile starts/successes/errors, echo and coverage pixels, visibility, opacity, z-index, and the current non-secret tile template.
+- The EUMETView catalog is parsed from live GetCapabilities. The production response contained 96 products across overview, infrared, cloud, precipitation, convection, lightning, and other groups. Recommended groups are presented first; the remaining catalog is in the `All products` disclosure.
+- Catalog metadata now preserves title, abstract, ID, CRS, time dimension, coverage, styles, optional official LegendURL, WMS operations, and declared WMS/WCS/WFS/GetFeatureInfo interfaces. WCS and WFS were not connected.
+- Official legend URL was visually verified for `msg_fes:cth` (Cloud Top Height — MSG — 0 degree). Products without an official LegendURL explicitly say that numeric ranges are not inferred. Satellite precipitation is labelled as an algorithmic satellite estimate, not radar.
+- A point panel always identifies coordinates, source, product, UTC frame, raster type, and coverage context. RainViewer remains visualization-only. For WMS, a bounded, catalog-allowlisted `GetFeatureInfo` query is attempted; its raw source response is shown only when returned, rather than being converted into an invented measurement.
+- A/B comparison uses two real source frames with vertical, horizontal, opacity, and blink modes. Pixel difference is deliberately disabled because these WMS/XYZ display rasters are not a compatible numerical field. The former static trace is now a sequence of four real frame images and says the same limitation.
+- The existing case area, timeline, A/B selection, and notes make up the scoped “Event study” workflow.
+- The main workspace answers what is shown, which UTC frame is selected, how colours should be read, and whether a point number is available. Build and network details live under the diagnostics disclosure.
 
-## Local factual checks
+## Final production verification
 
-| Item | Result |
+Verified in a fresh automated Chromium context at [https://meteotrace.vercel.app](https://meteotrace.vercel.app), 1440 × 1100, after production deployment `meteotrace-pl0wk3l67-cbnus.vercel.app`.
+
+| Check | Factual result |
 | --- | --- |
-| RainViewer metadata | `/api/rainviewer` returned `200 application/json`. |
-| RainViewer raster | Browser loaded 15 real RainViewer XYZ PNG tiles: 15 successful, 0 errors, `visible=true`, opacity `70%`, z-index `10`; raster inspection found 97,659 colored echo pixels. |
-| Example tile form | `https://tilecache.rainviewer.com/v2/radar/<current-frame>/256/5/17/10/2/1_1.png` returned `200 image/png`; this confirms normal EPSG:3857 XYZ `z/x/y` addressing. |
-| EUMETView locally | The local network closed TLS while requesting the official WMS GetCapabilities endpoint, so the local route correctly returned `503` and did not claim a visible satellite layer. |
+| Deployed revision | `/api/version` returned commit `0b87fc9` and deployment `meteotrace-pl0wk3l67-cbnus.vercel.app`; the same build ID was displayed in the page diagnostics. |
+| RainViewer metadata and rendering | `/api/rainviewer` returned `200 application/json`. The selected frame was `2026-07-25T11:10:00.000Z`; 15 XYZ tiles started, 15 loaded, 0 failed. The map was `LAYER_LIVE`, visible, 70% opacity, z-index 10, with 109,463 echo pixels. The radar and coverage tile requests returned `200 image/png`. |
+| RainViewer coverage | Coverage tiles such as `/v2/coverage/0/256/5/16/10/0/0_0.png` returned `200 image/png`. The visible area measured 290,958 coverage-mask pixels, and the optional mask checkbox rendered on the real map. |
+| EUMETView rendering | `/api/eumetsat/catalog` returned `200 application/json`. Official `msg_fes:ir108` at `2026-07-25T11:00:00.000Z` loaded through `/api/eumetsat?...REQUEST=GetMap...` as `200 image/png`; diagnostics showed 1 start, 1 success, `LAYER_LIVE`, visible, 70% opacity, z-index 10. The cloud image was visible on the map. |
+| Official legend | Selecting `msg_fes:cth` displayed its official LegendURL image in the browser. |
+| Point interface | A bounded production `GetFeatureInfo` request for `msg_fes:ir108` returned `200 application/json` with a feature collection and RGB-band properties. This is presented as source response, not meteorological point data. |
+| Actual analysis frames | Two comparison images and four sequence images loaded from real RainViewer/EUMETView frame URLs. Difference control was disabled with its WMS/XYZ-numerical-raster explanation. |
+| Browser errors | No CORS, image-decoding, or OpenLayers errors were observed. The only console error was an unrelated favicon `404`. |
 
-## Validation completed before production verification
+Production screenshots captured during the final verification:
 
-- `npm run test` — 6/6 passed.
+- `C:\Users\v8arm\AppData\Local\Temp\meteotrace-stage15-production-rain.png`
+- `C:\Users\v8arm\AppData\Local\Temp\meteotrace-stage15-production-eumet.png`
+
+## Automated checks
+
+- `npm run test` — 7/7 passed.
 - `npm run lint` — passed.
 - `npm run typecheck` — passed.
 - `npm run build` — passed.
+- Vercel production build — passed.
 
-## Production verification
+## Remaining / intentionally not started
 
-Verified in a fresh browser context on `https://meteotrace.vercel.app` after deployment `https://meteotrace-rmz1xmn75-cbnus.vercel.app`.
-
-| Check | Factual production result |
-| --- | --- |
-| Deployed revision | `/api/version` returned commit `5c8dad5` and deployment `meteotrace-rmz1xmn75-cbnus.vercel.app`; the diagnostic panel displayed the same build value. |
-| RainViewer API and raster | `/api/rainviewer` returned `200 application/json`. Current XYZ requests such as `/v2/radar/cf29fca60cd0/256/5/17/10/2/1_1.png` returned `200 image/png`. Browser diagnostics: 15 starts, 15 successes, 0 errors, 96,467 echo pixels, `visible=true`, opacity 70%, z-index 10. Visible echoes were present over Europe (including the British Isles and the western Mediterranean in the captured frame). |
-| Frame/time change | Changing one time step changed the frame timestamp from `2026-07-24T22:00:00.000Z` to `2026-07-24T21:50:00.000Z`, changed the opaque RainViewer frame path, and loaded real tiles for the new frame. |
-| Map/state changes | Searching `55, 20` moved the map to the supplied European coordinates. Reducing opacity changed the diagnostic value from 70% to 68% without rebuilding the source. Reloading in a fresh context again reached `LAYER_LIVE` with 15/15 successful tiles. |
-| EUMETView API and raster | `/api/eumetsat/catalog` returned `200 application/json`. The selected official IR product `msg_fes:ir108`, time `2026-07-24T21:30:00.000Z`, produced `/api/eumetsat?...REQUEST=GetMap...` with `200 image/png`; diagnostics recorded one image start, one success, `visible=true`, opacity 70%, z-index 10, and `LAYER_LIVE`. The browser screenshot visibly shows the cloud field over Europe. |
-| Browser console | No CORS, image decode, or OpenLayers layer error occurred. The only console error was an unrelated missing favicon (`404`). |
-
-Production screenshots captured during this verification:
-
-- `C:\Users\v8arm\AppData\Local\Temp\meteotrace-production-rain.png`
-- `C:\Users\v8arm\AppData\Local\Temp\meteotrace-production-eumet.png`
-
-## Not started by design
-
-Stages 2–4 remain out of scope: FMI, DWD, OPERA, lightning, commercial sources, font work, and broad test suites were not added. RosHydromet remains `PUBLIC_VIEW_ONLY` because no documented legal public raster service was confirmed.
+- Stages 2–4 remain out of scope: FMI, DWD, OPERA, commercial sources, lightning, font changes, and broad test expansion were not added.
+- EUMETView WCS/WFS are metadata-only at this stage; no numerical grid pipeline was claimed.
+- RainViewer coverage is a current published mask for the viewed area, not a guarantee of data over any wider region.
+- RosHydromet remains `PUBLIC_VIEW_ONLY`: no documented, lawful, ready-to-connect public raster service was confirmed.
