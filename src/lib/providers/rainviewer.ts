@@ -40,3 +40,16 @@ export function rainViewerTileUrl(host: string, path: string) {
   if (!safeHost(host) || !/^\/v2\/radar\/[A-Za-z0-9_-]+$/.test(path)) throw new Error("Unsafe RainViewer tile URL.");
   return `${host}${path}/256/{z}/{x}/{y}/2/1_1.png`;
 }
+
+/** Official RainViewer coverage mask; opaque pixels indicate published radar coverage. */
+export function rainViewerCoverageTileUrl(host: string) {
+  if (!safeHost(host)) throw new Error("Unsafe RainViewer tile host.");
+  return `${host}/v2/coverage/0/256/{z}/{x}/{y}/0/0_0.png`;
+}
+
+/** Official API also supports a rendered raster centred on a WGS84 point. */
+export function rainViewerPointImageUrl(host: string, path: string, lat: number, lon: number, size = 512, zoom = 6) {
+  if (!safeHost(host) || !/^\/v2\/radar\/[A-Za-z0-9_-]+$/.test(path)) throw new Error("Unsafe RainViewer image URL.");
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || size !== 256 && size !== 512 || zoom < 0 || zoom > 7) throw new Error("Invalid RainViewer image parameters.");
+  return `${host}${path}/${size}/${zoom}/${lat.toFixed(4)}/${lon.toFixed(4)}/2/1_1.png`;
+}

@@ -11,6 +11,9 @@ export type MapLayerDiagnostics = {
   tileSuccesses: number;
   tileErrors: number;
   echoPixels: number;
+  coverageTiles: number;
+  coveragePixels: number;
+  hasCoverage?: boolean;
   visible: boolean;
   opacity: number;
   zIndex: number;
@@ -24,6 +27,7 @@ export type ActiveMapLayer = {
   opacity: number;
   wmsLayer?: string;
   tileUrl?: string;
+  coverageTileUrl?: string;
   fallback?: boolean;
 };
 
@@ -33,9 +37,10 @@ type Props = {
   onPick: (area: Area) => void;
   onSelectionMode: (mode: SelectionMode) => void;
   onLayerDiagnostics: (provider: ActiveMapLayer["provider"], diagnostics: MapLayerDiagnostics) => void;
+  coverageVisible?: boolean;
 };
 
-function rasterPixels(tile: { getImage?: () => HTMLImageElement | HTMLCanvasElement }) {
+function rasterPixels(tile: { getImage?: () => HTMLImageElement | HTMLCanvasElement }, opaqueOnly = false) {
   try {
     const image = tile.getImage?.();
     if (!image?.width || !image?.height) return 0;
@@ -48,7 +53,7 @@ function rasterPixels(tile: { getImage?: () => HTMLImageElement | HTMLCanvasElem
     const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
     let pixels = 0;
     for (let index = 0; index < data.length; index += 4) {
-      if (data[index + 3] > 12 && (data[index] > 20 || data[index + 1] > 20 || data[index + 2] > 20)) pixels += 1;
+      if (data[index + 3] > 12 && (opaqueOnly || data[index] > 20 || data[index + 1] > 20 || data[index + 2] > 20)) pixels += 1;
     }
     return pixels;
   } catch {
@@ -57,14 +62,15 @@ function rasterPixels(tile: { getImage?: () => HTMLImageElement | HTMLCanvasElem
   }
 }
 
-export function MeteoMap({ area, layer, onPick, onSelectionMode, onLayerDiagnostics }: Props) {
+export function MeteoMap({ area, layer, onPick, onSelectionMode, onLayerDiagnostics, coverageVisible = false }: Props) {
   const target = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
-  const weatherRef = useRef<{ key: string; layer: any } | null>(null);
+  const weatherRef = useRef<{ key: string; layer: any; coverage?: any } | null>(null);
   const diagnosticsRef = useRef(onLayerDiagnostics);
   const lastLayerDiagnosticsRef = useRef<{ provider: ActiveMapLayer["provider"]; value: MapLayerDiagnostics } | null>(null);
   const opacityRef = useRef(layer?.opacity ?? 0);
+  const coverageVisibleRef = useRef(coverageVisible);
   const [selection, setSelection] = useState<SelectionMode>("point");
   const [full, setFull] = useState(false);
   const [ready, setReady] = useState(false);
@@ -72,13 +78,15 @@ export function MeteoMap({ area, layer, onPick, onSelectionMode, onLayerDiagnost
   const layerTime = layer?.time;
   const layerWms = layer?.wmsLayer;
   const layerTileUrl = layer?.tileUrl;
+  const coverageTileUrl = layer?.coverageTileUrl;
   const layerFallback = layer?.fallback;
   const layerOpacity = layer?.opacity;
   const layerTitle = layer?.title;
   opacityRef.current = layerOpacity ?? 0;
+  coverageVisibleRef.current = coverageVisible;
   const layerKey = useMemo(
-    () => layerProvider ? [layerProvider, layerTime, layerWms ?? "", layerTileUrl ?? "", layerFallback ? "fallback" : "primary"].join("|") : "",
-    [layerFallback, layerProvider, layerTileUrl, layerTime, layerWms],
+    () => layerProvider ? [layerProvider, layerTime, layerWms ?? "", layerTileUrl ?? "", coverageTileUrl ?? "", layerFallback ? "fallback" : "primary"].join("|") : "",
+    [coverageTileUrl, layerFallback, layerProvider, layerTileUrl, layerTime, layerWms],
   );
   const effectiveLayer = useMemo<ActiveMapLayer | undefined>(() => layerProvider && layerTime ? {
     provider: layerProvider,
@@ -87,8 +95,9 @@ export function MeteoMap({ area, layer, onPick, onSelectionMode, onLayerDiagnost
     opacity: opacityRef.current,
     wmsLayer: layerWms,
     tileUrl: layerTileUrl,
+    coverageTileUrl,
     fallback: layerFallback,
-  } : undefined, [layerFallback, layerProvider, layerTileUrl, layerTime, layerTitle, layerWms]);
+  } : undefined, [coverageTileUrl, layerFallback, layerProvider, layerTileUrl, layerTime, layerTitle, layerWms]);
 
   useEffect(() => { diagnosticsRef.current = onLayerDiagnostics; }, [onLayerDiagnostics]);
 
@@ -142,6 +151,7 @@ export function MeteoMap({ area, layer, onPick, onSelectionMode, onLayerDiagnost
     const map = mapRef.current;
     if (weatherRef.current) {
       map.removeLayer(weatherRef.current.layer);
+      if (weatherRef.current.coverage) map.removeLayer(weatherRef.current.coverage);
       weatherRef.current = null;
     }
     if (!effectiveLayer || !layerKey) return;
@@ -149,12 +159,13 @@ export function MeteoMap({ area, layer, onPick, onSelectionMode, onLayerDiagnost
     let disposed = false;
     let timer: number | undefined;
     const active = effectiveLayer;
-    const counters = { tileStarts: 0, tileSuccesses: 0, tileErrors: 0, echoPixels: 0 };
+    const counters = { tileStarts: 0, tileSuccesses: 0, tileErrors: 0, echoPixels: 0, coverageTiles: 0, coveragePixels: 0 };
     const emit = (state: LayerRenderState, reason?: string) => {
       const value: MapLayerDiagnostics = {
       state,
       frameTime: active.time,
       ...counters,
+      hasCoverage: active.provider === "rainviewer" ? counters.coveragePixels > 0 : undefined,
       visible: true,
       opacity: active.opacity,
       zIndex: 10,
@@ -172,13 +183,16 @@ export function MeteoMap({ area, layer, onPick, onSelectionMode, onLayerDiagnost
       if (disposed || !mapRef.current) return;
 
       let weather: any;
+      let coverage: any;
       if (active.provider === "rainviewer") {
         const source = new XYZ({ url: active.tileUrl, crossOrigin: "anonymous", maxZoom: 7 });
+        const coverageSource = active.coverageTileUrl ? new XYZ({ url: active.coverageTileUrl, crossOrigin: "anonymous", maxZoom: 7 }) : undefined;
         const settle = () => {
           window.clearTimeout(timer);
           timer = window.setTimeout(() => {
             if (counters.tileSuccesses > 0) {
-              emit(counters.echoPixels > 32 ? "LAYER_LIVE" : "NO_ECHOES", counters.echoPixels > 32 ? undefined : "Слой загружен, осадков в выбранной области не обнаружено.");
+              if (coverageSource && counters.coverageTiles > 0 && counters.coveragePixels === 0) emit("NO_COVERAGE", "Радарное покрытие для выбранной области отсутствует.");
+              else emit(counters.echoPixels > 32 ? "LAYER_LIVE" : "NO_ECHOES", counters.echoPixels > 32 ? undefined : "Слой загружен, осадков в выбранной области не обнаружено.");
             } else if (counters.tileErrors > 0) {
               emit("LAYER_ERROR", "Тайлы RainViewer не загрузились.");
             }
@@ -187,7 +201,10 @@ export function MeteoMap({ area, layer, onPick, onSelectionMode, onLayerDiagnost
         source.on("tileloadstart", () => { counters.tileStarts += 1; emit("LAYER_LOADING"); });
         source.on("tileloadend", (event: any) => { counters.tileSuccesses += 1; counters.echoPixels += rasterPixels(event.tile); settle(); });
         source.on("tileloaderror", () => { counters.tileErrors += 1; settle(); });
+        coverageSource?.on("tileloadend", (event: any) => { counters.coverageTiles += 1; counters.coveragePixels += rasterPixels(event.tile, true); settle(); });
+        coverageSource?.on("tileloaderror", () => { counters.coverageTiles += 1; settle(); });
         weather = new TileLayer({ source, opacity: active.opacity / 100, visible: true, zIndex: 10 });
+        if (coverageSource) coverage = new TileLayer({ source: coverageSource, opacity: coverageVisibleRef.current ? 0.22 : 0, visible: true, zIndex: 9 });
       } else {
         const source = new ImageWMS({
           url: "/api/eumetsat",
@@ -201,7 +218,8 @@ export function MeteoMap({ area, layer, onPick, onSelectionMode, onLayerDiagnost
         weather = new ImageLayer({ source, opacity: active.opacity / 100, visible: true, zIndex: 10 });
       }
 
-      weatherRef.current = { key: layerKey, layer: weather };
+      weatherRef.current = { key: layerKey, layer: weather, coverage };
+      if (coverage) map.addLayer(coverage);
       map.addLayer(weather);
       emit("LAYER_LOADING");
     }
@@ -212,6 +230,7 @@ export function MeteoMap({ area, layer, onPick, onSelectionMode, onLayerDiagnost
       window.clearTimeout(timer);
       if (weatherRef.current?.key === layerKey) {
         map.removeLayer(weatherRef.current.layer);
+        if (weatherRef.current.coverage) map.removeLayer(weatherRef.current.coverage);
         weatherRef.current = null;
       }
     };
@@ -228,6 +247,10 @@ export function MeteoMap({ area, layer, onPick, onSelectionMode, onLayerDiagnost
       diagnosticsRef.current(last.provider, value);
     }
   }, [layerOpacity]);
+
+  useEffect(() => {
+    weatherRef.current?.coverage?.setOpacity(coverageVisible ? 0.22 : 0);
+  }, [coverageVisible]);
 
   const zoom = (delta: number) => {
     const view = mapRef.current?.getView();

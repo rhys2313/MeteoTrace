@@ -8,11 +8,12 @@ export type EumetsatCatalog = {
   preferred: { natural?: string; infrared?: string; precipitation?: string };
   /** Server-only validation list; the public catalog route deliberately omits it. */
   allowedLayerIds: string[];
+  operations: string[];
 };
 
 let cachedCatalog: { value: EumetsatCatalog; expiresAt: number } | undefined;
-
 const text = (source: string, expression: RegExp) => source.match(expression)?.[1]?.trim();
+const decode = (value?: string) => value?.replace(/&amp;/g, "&").replace(/&quot;/g, '"');
 
 function periodToMilliseconds(value: string) {
   const match = value.match(/^P(?:([0-9.]+)D)?(?:T(?:([0-9.]+)H)?(?:([0-9.]+)M)?(?:([0-9.]+)S)?)?$/);
@@ -31,24 +32,83 @@ export function timesFromDimension(dimension?: string, maximum = 16) {
   return result.reverse();
 }
 
-function leafLayers(xml: string): Layer[] {
+function groupFor(title: string, id: string): NonNullable<ProviderProduct["group"]> {
+  const value = `${title} ${id}`.toLowerCase();
+  if (/lightning|\bli\b/.test(value)) return "lightning";
+  if (/precipitation|rain[ _-]?rate|rainfall/.test(value)) return "precipitation";
+  if (/severe|convective|convection/.test(value)) return "convection";
+  if (/cloud\s*(top|type|height|temperature|pressure)|fog|low cloud/.test(value)) return "cloud";
+  if (/\bir\s*1?0\.?[58]|infrared|water vapou?r/.test(value)) return "infrared";
+  if (/rgb|natural colou?r|geocolou?r|airmass|dust|snow|fire/.test(value)) return "overview";
+  return "other";
+}
+
+function stylesFromLayer(xml: string) {
+  return [...xml.matchAll(/<Style(?:\s[^>]*)?>([\s\S]*?)<\/Style>/gi)].map((match) => {
+    const source = match[1];
+    const legendBlock = source.match(/<LegendURL(?:\s[^>]*)?>([\s\S]*?)<\/LegendURL>/i)?.[1] ?? "";
+    const legendUrl = decode(legendBlock.match(/<(?:OnlineResource|LegendURL)[^>]*(?:xlink:href|href)=["']([^"']+)["']/i)?.[1]);
+    return { name: text(source, /<Name>([^<]+)<\/Name>/i), title: text(source, /<Title>([^<]+)<\/Title>/i), legendUrl };
+  });
+}
+
+function boundingBoxFromLayer(xml: string) {
+  const match = xml.match(/<BoundingBox\s+([^>]+?)\/?>(?:<\/BoundingBox>)?/i);
+  if (match) {
+    const attr = match[1];
+    const number = (key: string) => Number(attr.match(new RegExp(`${key}=["']([^"']+)["']`, "i"))?.[1]);
+    const values = [number("minx"), number("miny"), number("maxx"), number("maxy")];
+    if (values.every(Number.isFinite)) return { crs: attr.match(/(?:CRS|SRS)=["']([^"']+)["']/i)?.[1], values: values as [number, number, number, number] };
+  }
+  const geo = xml.match(/<EX_GeographicBoundingBox>([\s\S]*?)<\/EX_GeographicBoundingBox>/i)?.[1];
+  if (!geo) return undefined;
+  const west = Number(text(geo, /<westBoundLongitude>([^<]+)<\/westBoundLongitude>/i)); const south = Number(text(geo, /<southBoundLatitude>([^<]+)<\/southBoundLatitude>/i));
+  const east = Number(text(geo, /<eastBoundLongitude>([^<]+)<\/eastBoundLongitude>/i)); const north = Number(text(geo, /<northBoundLatitude>([^<]+)<\/northBoundLatitude>/i));
+  return [west, south, east, north].every(Number.isFinite) ? { crs: "EPSG:4326", values: [west, south, east, north] as [number, number, number, number] } : undefined;
+}
+
+function capabilitiesOperations(xml: string) {
+  const request = xml.match(/<Request>([\s\S]*?)<\/Request>/i)?.[1] ?? "";
+  return [...request.matchAll(/<([A-Za-z][\w.-]*)\b/g)].map((match) => match[1]).filter((name, index, values) => values.indexOf(name) === index);
+}
+
+function leafLayers(xml: string, operations: string[]): Layer[] {
   const stack: Array<{ start: number; children: number }> = []; const ranges: Array<{ start: number; end: number; children: number }> = [];
   for (const match of xml.matchAll(/<\/?Layer(?:\s[^>]*)?>/g)) {
     if (match[0].startsWith("</")) { const opened = stack.pop(); if (opened && match.index !== undefined) ranges.push({ start: opened.start, end: match.index + match[0].length, children: opened.children }); }
     else { if (stack.length) stack[stack.length - 1].children += 1; stack.push({ start: match.index ?? 0, children: 0 }); }
   }
-  const layers = ranges.filter((range) => range.children === 0).flatMap((range) => {
+  return ranges.filter((range) => range.children === 0).flatMap((range) => {
     const candidate = xml.slice(range.start, range.end);
     const id = text(candidate, /<Name>([^<]+)<\/Name>/); const title = text(candidate, /<Title>([^<]+)<\/Title>/);
-    if (!title) return [];
+    if (!id || !title) return [];
     const timeMatch = candidate.match(/<Dimension[^>]*\bname=["']time["'][^>]*>([\s\S]*?)<\/Dimension>/i);
     const supportedTimes = timesFromDimension(timeMatch?.[1]?.trim());
     const crs = [...candidate.matchAll(/<(?:CRS|SRS)>([^<]+)<\/(?:CRS|SRS)>/g)].map((match) => match[1].trim());
-    return id ? [{ id, title, abstract: text(candidate, /<Abstract>([\s\S]*?)<\/Abstract>/)?.replace(/\s+/g, " "), supportedTimes, timeDimension: timeMatch?.[1]?.trim(), crs, coverage: "EUMETView WMS coverage depends on the selected product.", attribution: "© EUMETSAT", legend: ["WMS visualization only — no pixel value is inferred."] }] : [];
-  });
-  // CRS may be inherited from a parent WMS Layer and therefore absent on a leaf product.
-  // The safe GetMap handler is still the final authority for a requested CRS/image.
-  return layers.filter((layer) => layer.supportedTimes.length > 0);
+    const styles = stylesFromLayer(candidate);
+    const group = groupFor(title, id);
+    return [{
+      id,
+      title,
+      abstract: text(candidate, /<Abstract>([\s\S]*?)<\/Abstract>/)?.replace(/\s+/g, " "),
+      supportedTimes,
+      timeDimension: timeMatch?.[1]?.trim(),
+      crs,
+      boundingBox: boundingBoxFromLayer(candidate),
+      styles,
+      operations,
+      interfaces: { wms: operations.includes("GetMap"), wcs: false, wfs: false, getFeatureInfo: operations.includes("GetFeatureInfo") },
+      productInfoUrl: `https://view.eumetsat.int/productviewer/productDetails/${encodeURIComponent(id)}?v=default`,
+      group,
+      recommended: group !== "other",
+      coverage: "Покрытие определяется официальным EUMETView WMS для выбранного продукта.",
+      attribution: "© EUMETSAT",
+      legend: styles.flatMap((style) => style.legendUrl ? [style.legendUrl] : []),
+      units: "Визуализация WMS; численная единица пикселя не опубликована.",
+      dataKind: group === "precipitation" ? "algorithmic_estimate" : "visualization",
+      limitations: "WMS-изображение не является численным измерением в точке без отдельно доступного WCS/WFS/FeatureInfo.",
+    } satisfies Layer];
+  }).filter((layer) => layer.supportedTimes.length > 0);
 }
 
 function selectProducts(layers: Layer[]) {
@@ -64,12 +124,22 @@ function selectProducts(layers: Layer[]) {
 }
 
 export function parseEumetsatCapabilities(xml: string): EumetsatCatalog {
-  const allLayers = leafLayers(xml);
-  const preferred = selectProducts(allLayers);
-  const preferredIds = new Set(Object.values(preferred).filter(Boolean));
-  const products = allLayers.filter((layer) => preferredIds.has(layer.id));
-  if (!preferred.natural || !preferred.infrared || products.length < 2) throw new Error("EUMETView catalogue did not expose the required timed satellite products.");
-  return { fetchedAt: new Date().toISOString(), products, preferred, allowedLayerIds: allLayers.map((layer) => layer.id) };
+  const operations = capabilitiesOperations(xml);
+  const parsed = leafLayers(xml, operations);
+  const seenGroups = new Set<string>();
+  const recommendedIds = new Set<string>();
+  for (const product of parsed) {
+    if (product.group && product.group !== "other" && !seenGroups.has(product.group)) {
+      seenGroups.add(product.group);
+      recommendedIds.add(product.id);
+    }
+  }
+  const products = parsed.map((product) => ({ ...product, recommended: recommendedIds.has(product.id) }));
+  const preferred = selectProducts(products);
+  for (const id of Object.values(preferred)) if (id) recommendedIds.add(id);
+  const curatedProducts = products.map((product) => ({ ...product, recommended: recommendedIds.has(product.id) }));
+  if (!preferred.natural || !preferred.infrared || curatedProducts.length < 2) throw new Error("EUMETView catalogue did not expose the required timed satellite products.");
+  return { fetchedAt: new Date().toISOString(), products: curatedProducts, preferred, allowedLayerIds: curatedProducts.map((layer) => layer.id), operations };
 }
 
 export async function getEumetsatCatalog() {

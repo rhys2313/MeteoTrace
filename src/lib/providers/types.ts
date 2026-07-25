@@ -8,6 +8,20 @@ export type ProviderProduct = {
   coverage: string;
   attribution: string;
   legend: string[];
+  group?: "overview" | "infrared" | "cloud" | "precipitation" | "convection" | "lightning" | "other";
+  recommended?: boolean;
+  crs?: string[];
+  timeDimension?: string;
+  boundingBox?: { crs?: string; values: [number, number, number, number] };
+  styles?: Array<{ name?: string; title?: string; legendUrl?: string }>;
+  operations?: string[];
+  interfaces?: { wms: boolean; wcs: boolean; wfs: boolean; getFeatureInfo: boolean };
+  productInfoUrl?: string;
+  updateInterval?: string;
+  spatialResolution?: string;
+  units?: string;
+  dataKind?: "visualization" | "algorithmic_estimate" | "measurement";
+  limitations?: string;
 };
 
 export type ProviderStatus = {

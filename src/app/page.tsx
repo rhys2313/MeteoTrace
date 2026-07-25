@@ -14,7 +14,7 @@ import { Sources } from "@/components/sources/Sources";
 import { Area, Frame, MeteoCase, ProductId, SelectionMode } from "@/types";
 import { ProviderProduct } from "@/lib/providers/types";
 import { EumetsatCatalog } from "@/lib/providers/eumetsat";
-import { RainViewerMetadata, rainViewerTileUrl } from "@/lib/providers/rainviewer";
+import { RainViewerMetadata, rainViewerCoverageTileUrl, rainViewerPointImageUrl, rainViewerTileUrl } from "@/lib/providers/rainviewer";
 import { usePlayback } from "@/hooks/usePlayback";
 import { useLocalCases } from "@/hooks/useLocalCases";
 import { formatCoordinates } from "@/lib/coordinates";
@@ -27,7 +27,7 @@ type ApiState = "API_LOADING" | "API_LIVE" | "API_ERROR";
 
 function toFrames(times: string[], prefix: string): Frame[] { return times.map((time, index) => ({ id: `${prefix}-${time}`, index, time, label: `${time.slice(11, 16)} UTC` })); }
 function responseJson<T>(response: Response): Promise<T> { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json() as Promise<T>; }
-function emptyDiagnostics(): MapLayerDiagnostics { return { state: "IDLE", tileStarts: 0, tileSuccesses: 0, tileErrors: 0, echoPixels: 0, visible: false, opacity: 0, zIndex: 0 }; }
+function emptyDiagnostics(): MapLayerDiagnostics { return { state: "IDLE", tileStarts: 0, tileSuccesses: 0, tileErrors: 0, echoPixels: 0, coverageTiles: 0, coveragePixels: 0, visible: false, opacity: 0, zIndex: 0 }; }
 function layerMessage(state: LayerRenderState) {
   if (state === "LAYER_LOADING") return "Слой загружается: ждём первые реальные тайлы.";
   if (state === "LAYER_LIVE") return "Слой загружен и визуально добавлен на карту.";
@@ -42,6 +42,9 @@ export default function Home() {
   const [activeSource, setActiveSource] = useState<SourceKey>("rainviewer");
   const [satelliteId, setSatelliteId] = useState<string>();
   const [opacity, setOpacity] = useState(70);
+  const [coverageVisible, setCoverageVisible] = useState(false);
+  const [comparisonFrameA, setComparisonFrameA] = useState(0);
+  const [comparisonFrameB, setComparisonFrameB] = useState(0);
   const [selectionMode, setSelectionMode] = useState<SelectionMode>("point");
   const [catalog, setCatalog] = useState<EumetsatCatalog>();
   const [rain, setRain] = useState<RainViewerMetadata>();
@@ -67,11 +70,26 @@ export default function Home() {
     if (!currentFrameTime) return undefined;
     if (activeSource === "rainviewer") {
       if (!rainFrame || !rain?.host) return undefined;
-      return { provider: "rainviewer", title: RADAR_PRODUCT.title, time: rainFrame.time, opacity, tileUrl: rainViewerTileUrl(rain.host, rainFrame.path) };
+      return { provider: "rainviewer", title: RADAR_PRODUCT.title, time: rainFrame.time, opacity, tileUrl: rainViewerTileUrl(rain.host, rainFrame.path), coverageTileUrl: rainViewerCoverageTileUrl(rain.host) };
     }
     if (!satelliteProduct) return undefined;
     return { provider: "eumetsat", title: satelliteProduct.title, time: currentFrameTime, opacity, wmsLayer: satelliteProduct.id, fallback: Boolean(fallback) };
   }, [activeSource, currentFrameTime, fallback, opacity, rain?.host, rainFrame, satelliteProduct]);
+
+  const imageUrlForFrame = useCallback((index: number) => {
+    const frame = frames[index];
+    if (!frame) return undefined;
+    if (activeSource === "rainviewer") {
+      const radarFrame = rain?.frames[index];
+      return radarFrame && rain?.host ? rainViewerPointImageUrl(rain.host, radarFrame.path, area.lat, area.lon) : undefined;
+    }
+    if (!satelliteProduct) return undefined;
+    const longitude = area.lon * 20037508.34 / 180;
+    const latitude = Math.log(Math.tan((90 + Math.max(-85, Math.min(85, area.lat))) * Math.PI / 360)) / (Math.PI / 180) * 20037508.34 / 180;
+    const radius = 1_500_000;
+    const params = new URLSearchParams({ REQUEST: "GetMap", SERVICE: "WMS", VERSION: "1.3.0", LAYERS: satelliteProduct.id, STYLES: "", FORMAT: "image/png", TRANSPARENT: "TRUE", TIME: frame.time, WIDTH: "640", HEIGHT: "420", CRS: "EPSG:3857", BBOX: `${longitude - radius},${latitude - radius},${longitude + radius},${latitude + radius}` });
+    return `/api/eumetsat?${params.toString()}`;
+  }, [activeSource, area.lat, area.lon, frames, rain?.frames, rain?.host, satelliteProduct]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -95,6 +113,11 @@ export default function Home() {
 
   const setPlaybackFrame = playback.setFrame;
   useEffect(() => { if (frames.length) setPlaybackFrame(frames.length - 1); }, [activeSource, satelliteProduct?.id, frames.length, setPlaybackFrame]);
+  useEffect(() => {
+    if (!frames.length) return;
+    setComparisonFrameA((value) => Math.max(0, Math.min(value, frames.length - 1)));
+    setComparisonFrameB((value) => value === 0 ? Math.max(0, frames.length - 1) : Math.max(0, Math.min(value, frames.length - 1)));
+  }, [activeSource, frames.length, satelliteProduct?.id]);
 
   const onLayerDiagnostics = useCallback((provider: SourceKey, next: MapLayerDiagnostics) => {
     setDiagnostics((state) => ({ ...state, [provider]: next }));
@@ -128,25 +151,25 @@ export default function Home() {
 
   const activeDiagnostics = diagnostics[activeSource];
   const stats = [
-    { value: apiState.rainviewer.replace("API_", ""), label: "RAINVIEWER API", detail: rain ? `${rain.frames.length} реальных кадров` : "метаданные" },
-    { value: apiState.eumetsat.replace("API_", ""), label: "EUMETVIEW API", detail: catalog ? `${satelliteProducts.length} продукта из WMS` : "GetCapabilities" },
-    { value: activeDiagnostics.state.replaceAll("_", " "), label: "СОСТОЯНИЕ СЛОЯ", detail: activeDiagnostics.frameTime?.slice(11, 16) ?? "ожидание" },
-    { value: `${opacity}%`, label: "СЛОЙ", detail: "прозрачность" },
+    { value: activeSource === "rainviewer" ? "РАДАР" : "СПУТНИК", label: "ЧТО ОТОБРАЖАЕТСЯ", detail: selectedTitle },
+    { value: currentFrame?.label ?? "—", label: "ВРЕМЯ КАДРА", detail: "UTC" },
+    { value: activeSource === "rainviewer" ? "ЭХО" : "WMS", label: "ЧТО ОЗНАЧАЮТ ЦВЕТА", detail: activeSource === "rainviewer" ? "визуальная шкала отражаемости" : "официальная легенда или описание" },
+    { value: "НЕТ", label: "ЧИСЛО В ТОЧКЕ", detail: "доступна только визуализация" },
   ];
 
   return <><Header /><main>
     <HeroSearch onArea={setArea} />
     <section className="stats" aria-label="Статусы источников">{stats.map((stat) => <article key={stat.label}><b>{stat.value}</b><span>{stat.label}</span><small>{stat.detail}</small></article>)}</section>
     <section className="workspace" id="workspace">
-      <div className="workspaceHeading"><div><p>РАБОЧЕЕ ПРОСТРАНСТВО · ЭТАП 1 LIVE-ЯДРО · BUILD {buildVersion}</p><h2>{area.name.toUpperCase()} <small>{formatCoordinates(area)}</small></h2></div><span className={`sourceState ${activeDiagnostics.state === "LAYER_LIVE" ? "" : "offline"}`}><i /> {activeSource.toUpperCase()} · {activeDiagnostics.state.replaceAll("_", " ")}</span></div>
+      <div className="workspaceHeading"><div><p>ИССЛЕДОВАНИЕ СОБЫТИЯ · РЕАЛЬНЫЕ КАДРЫ И МЕТАДАННЫЕ</p><h2>{area.name.toUpperCase()} <small>{formatCoordinates(area)}</small></h2></div><span className={`sourceState ${activeDiagnostics.state === "LAYER_LIVE" ? "" : "offline"}`}><i /> {activeDiagnostics.state.replaceAll("_", " ")}</span></div>
       <div className="sourceSwitch" role="group" aria-label="Категория слоя"><button className={activeSource === "rainviewer" ? "active" : ""} onClick={() => { setFallback(undefined); setActiveSource("rainviewer"); }}>РАДАРЫ</button><button className={activeSource === "eumetsat" ? "active" : ""} onClick={() => { setFallback(undefined); setSatelliteId(catalog?.preferred.infrared ?? satelliteId); setActiveSource("eumetsat"); }}>СПУТНИК</button><button disabled title="Молнии не входят в Этап 1">МОЛНИИ · ЭТАП 2</button></div>
       {fallback ? <p className="fallbackNotice">FALLBACK · {fallback}</p> : null}<p className="liveDiagnostic">{diagnostic}</p>
-      <div className="mapGrid"><MeteoMap area={area} layer={activeLayer} onPick={setArea} onSelectionMode={setSelectionMode} onLayerDiagnostics={onLayerDiagnostics} /><ProductSelector category={activeSource === "rainviewer" ? "radar" : "satellite"} products={activeSource === "rainviewer" ? [{ ...RADAR_PRODUCT, supportedTimes: rain?.frames.map((frame) => frame.time) ?? [] }] : satelliteProducts} selected={activeSource === "rainviewer" ? RADAR_PRODUCT.id : satelliteProduct?.id} onSelected={(id) => { setFallback(undefined); if (activeSource === "eumetsat") setSatelliteId(id); }} opacity={opacity} onOpacity={setOpacity} diagnostics={activeDiagnostics} apiState={apiState[activeSource]} buildVersion={buildVersion} /></div>
+      <div className="mapGrid"><MeteoMap area={area} layer={activeLayer} onPick={setArea} onSelectionMode={setSelectionMode} onLayerDiagnostics={onLayerDiagnostics} coverageVisible={coverageVisible} /><ProductSelector category={activeSource === "rainviewer" ? "radar" : "satellite"} products={activeSource === "rainviewer" ? [{ ...RADAR_PRODUCT, supportedTimes: rain?.frames.map((frame) => frame.time) ?? [], units: "Визуальная шкала отражаемости", dataKind: "visualization" }] : satelliteProducts} selected={activeSource === "rainviewer" ? RADAR_PRODUCT.id : satelliteProduct?.id} onSelected={(id) => { setFallback(undefined); if (activeSource === "eumetsat") setSatelliteId(id); }} opacity={opacity} onOpacity={setOpacity} diagnostics={activeDiagnostics} apiState={apiState[activeSource]} buildVersion={buildVersion} area={area} layer={activeLayer} coverageVisible={coverageVisible} onCoverageVisible={setCoverageVisible} /></div>
       <Timeline frames={frames} {...playback} />
     </section>
-    <section className="lowerGrid" id="comparison"><ComparisonPanel frames={frames.length ? frames : []} frameA={Math.min(playback.frame, Math.max(0, frames.length - 1))} frameB={Math.min(playback.frame, Math.max(0, frames.length - 1))} onFrameA={playback.setFrame} onFrameB={playback.setFrame} /><div className="quickRead"><p>АКТИВНЫЙ СЛОЙ</p><b>{selectedTitle}</b><span>{activeLayer ? `${activeLayer.time} · ${activeLayer.provider === "rainviewer" ? "RainViewer radar" : "EUMETView WMS"}` : "Слой ожидает настоящий кадр; изображение не симулируется."}</span></div></section>
-    <section id="trace"><AtmosphericTraceGraph area={area} selected={selectedProduct} frameLabel={currentFrame?.label ?? "ожидание"} /></section>
-    <section className="caseGrid" id="cases"><CaseEditor area={area} products={[selectedProduct]} frameA={playback.frame} frameB={playback.frame} startTime={frames[0]?.time ?? ""} endTime={frames.at(-1)?.time ?? ""} source={activeSource} selectionMode={selectionMode} onSave={local.add} onImport={local.addMany} /><SavedCases cases={local.cases} onOpen={openCase} onRemove={local.remove} onRename={local.rename} onDuplicate={local.duplicate} /></section>
+    <section className="lowerGrid" id="comparison"><ComparisonPanel frames={frames} frameA={comparisonFrameA} frameB={comparisonFrameB} onFrameA={setComparisonFrameA} onFrameB={setComparisonFrameB} imageUrlForFrame={imageUrlForFrame} sourceLabel={activeSource === "rainviewer" ? "RainViewer XYZ raster" : "EUMETView WMS"} /><div className="quickRead"><p>ИССЛЕДОВАНИЕ СОБЫТИЯ</p><b>{selectedTitle}</b><span>Точка: {formatCoordinates(area)}<br />Начало: {frames[comparisonFrameA]?.time ?? "—"}<br />Конец: {frames[comparisonFrameB]?.time ?? "—"}<br />Сравнение использует реальные кадры. Сохраните конфигурацию и заметку в кейс ниже.</span></div></section>
+    <section id="trace"><AtmosphericTraceGraph frames={frames} imageUrlForFrame={imageUrlForFrame} sourceLabel={activeSource === "rainviewer" ? "RainViewer" : "EUMETView"} productTitle={selectedTitle} /></section>
+    <section className="caseGrid" id="cases"><CaseEditor area={area} products={[selectedProduct]} frameA={comparisonFrameA} frameB={comparisonFrameB} startTime={frames[comparisonFrameA]?.time ?? ""} endTime={frames[comparisonFrameB]?.time ?? ""} source={activeSource} selectionMode={selectionMode} onSave={local.add} onImport={local.addMany} /><SavedCases cases={local.cases} onOpen={openCase} onRemove={local.remove} onRename={local.rename} onDuplicate={local.duplicate} /></section>
     <Sources />
   </main><footer>METEOTRACE · ИССЛЕДОВАТЕЛЬСКИЙ ИНСТРУМЕНТ · НЕ ОФИЦИАЛЬНЫЙ ПРОГНОЗ</footer></>;
 }
