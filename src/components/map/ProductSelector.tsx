@@ -20,6 +20,7 @@ type Props = {
   layer?: ActiveMapLayer;
   coverageVisible: boolean;
   onCoverageVisible: (visible: boolean) => void;
+  pointValue: { status: "visualization" | "checking" | "available" | "unavailable"; detail?: string };
 };
 
 const GROUP_LABELS: Record<NonNullable<ProviderProduct["group"]>, string> = {
@@ -36,7 +37,7 @@ function interval(times: string[]) {
   return Number.isFinite(diff) && diff > 0 ? `${Math.round(diff / 60_000)} мин` : "нерегулярный";
 }
 
-export function ProductSelector({ category, products, selected, onSelected, opacity, onOpacity, diagnostics, apiState, buildVersion, area, layer, coverageVisible, onCoverageVisible }: Props) {
+export function ProductSelector({ category, products, selected, onSelected, opacity, onOpacity, diagnostics, apiState, buildVersion, area, layer, coverageVisible, onCoverageVisible, pointValue }: Props) {
   const isRadar = category === "radar";
   const active = products.find((product) => product.id === selected) ?? products[0];
   const recommended = products.filter((product) => product.recommended !== false);
@@ -57,7 +58,7 @@ export function ProductSelector({ category, products, selected, onSelected, opac
 
     <div className="layerToggles"><p>ОТОБРАЖЕНИЕ</p><label>ПРОЗРАЧНОСТЬ <input type="range" min="0" max="100" value={opacity} onChange={(event) => onOpacity(Number(event.target.value))} /></label>{isRadar ? <label><input type="checkbox" checked={coverageVisible} onChange={(event) => onCoverageVisible(event.target.checked)} /> ПОКАЗАТЬ МАСКУ ПОКРЫТИЯ</label> : null}<p className="legendTitle">ЛЕГЕНДА</p>{isRadar ? <div className="radarLegend" aria-label="Шкала отражаемости радара"><span>слабее</span><i /><span>сильнее · визуальная шкала API</span></div> : <small>Цвета интерпретируются только по официальной LegendURL; без неё численные диапазоны не выводятся.</small>}</div>
 
-    <section className="pointInfo" aria-live="polite"><p className="panelLabel">ВЫБРАННАЯ ТОЧКА</p><dl><dt>КООРДИНАТЫ</dt><dd>{area.lat.toFixed(4)}, {area.lon.toFixed(4)}</dd><dt>ИСТОЧНИК</dt><dd>{isRadar ? "RainViewer" : "EUMETView"}</dd><dt>ПРОДУКТ</dt><dd>{active?.title ?? "—"}</dd><dt>КАДР</dt><dd>{layer?.time ?? "—"}</dd><dt>ТИП ДАННЫХ</dt><dd>{isRadar ? "XYZ raster" : "WMS image"}</dd><dt>ПОКРЫТИЕ</dt><dd>{isRadar ? coverage : "Зависит от выбранного продукта"}</dd></dl><p>Источник предоставляет только визуализацию. Численное значение для точки недоступно.</p></section>
+    <section className="pointInfo" aria-live="polite"><p className="panelLabel">ВЫБРАННАЯ ТОЧКА</p><dl><dt>КООРДИНАТЫ</dt><dd>{area.lat.toFixed(4)}, {area.lon.toFixed(4)}</dd><dt>ИСТОЧНИК</dt><dd>{isRadar ? "RainViewer" : "EUMETView"}</dd><dt>ПРОДУКТ</dt><dd>{active?.title ?? "—"}</dd><dt>КАДР</dt><dd>{layer?.time ?? "—"}</dd><dt>ТИП ДАННЫХ</dt><dd>{isRadar ? "XYZ raster" : "WMS image"}</dd><dt>ПОКРЫТИЕ</dt><dd>{isRadar ? coverage : "Зависит от выбранного продукта"}</dd></dl>{pointValue.status === "checking" ? <p>Проверяем разрешённый интерфейс GetFeatureInfo…</p> : pointValue.status === "available" ? <><p>Источник вернул ответ GetFeatureInfo для этой точки; это не преобразованная MeteoTrace величина.</p><pre className="pointRaw">{pointValue.detail}</pre></> : <p>{pointValue.status === "unavailable" ? "Численный ответ для этой точки не выдан выбранным WMS-слоем." : "Источник предоставляет только визуализацию. Численное значение для точки недоступно."}</p>}</section>
 
     <details className="layerDiagnostics" data-testid="layer-diagnostics"><summary>ДИАГНОСТИКА СЛОЯ</summary><dl>
       <div><dt>BUILD</dt><dd>{buildVersion}</dd></div><div><dt>API</dt><dd>{apiState}</dd></div><div><dt>СОСТОЯНИЕ</dt><dd>{diagnostics.state}</dd></div>

@@ -24,6 +24,7 @@ const INITIAL_AREA: Area = { name: "Прага", country: "Чехия", lat: 50.
 const RADAR_PRODUCT: ProviderProduct = { id: "rainviewer-radar", title: "Композит отражаемости", supportedTimes: [], coverage: "Публичное радарное покрытие RainViewer", attribution: "Weather data by RainViewer", legend: ["dBZ: слабее → сильнее"] };
 type SourceKey = "rainviewer" | "eumetsat";
 type ApiState = "API_LOADING" | "API_LIVE" | "API_ERROR";
+type PointValueState = { status: "visualization" | "checking" | "available" | "unavailable"; detail?: string };
 
 function toFrames(times: string[], prefix: string): Frame[] { return times.map((time, index) => ({ id: `${prefix}-${time}`, index, time, label: `${time.slice(11, 16)} UTC` })); }
 function responseJson<T>(response: Response): Promise<T> { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json() as Promise<T>; }
@@ -45,6 +46,7 @@ export default function Home() {
   const [coverageVisible, setCoverageVisible] = useState(false);
   const [comparisonFrameA, setComparisonFrameA] = useState(0);
   const [comparisonFrameB, setComparisonFrameB] = useState(0);
+  const [pointValue, setPointValue] = useState<PointValueState>({ status: "visualization" });
   const [selectionMode, setSelectionMode] = useState<SelectionMode>("point");
   const [catalog, setCatalog] = useState<EumetsatCatalog>();
   const [rain, setRain] = useState<RainViewerMetadata>();
@@ -90,6 +92,28 @@ export default function Home() {
     const params = new URLSearchParams({ REQUEST: "GetMap", SERVICE: "WMS", VERSION: "1.3.0", LAYERS: satelliteProduct.id, STYLES: "", FORMAT: "image/png", TRANSPARENT: "TRUE", TIME: frame.time, WIDTH: "640", HEIGHT: "420", CRS: "EPSG:3857", BBOX: `${longitude - radius},${latitude - radius},${longitude + radius},${latitude + radius}` });
     return `/api/eumetsat?${params.toString()}`;
   }, [activeSource, area.lat, area.lon, frames, rain?.frames, rain?.host, satelliteProduct]);
+
+  useEffect(() => {
+    if (activeSource !== "eumetsat" || !satelliteProduct || !currentFrameTime || !satelliteProduct.interfaces?.getFeatureInfo) {
+      setPointValue({ status: "visualization" });
+      return;
+    }
+    const controller = new AbortController();
+    const longitude = area.lon * 20037508.34 / 180;
+    const latitude = Math.log(Math.tan((90 + Math.max(-85, Math.min(85, area.lat))) * Math.PI / 360)) / (Math.PI / 180) * 20037508.34 / 180;
+    const radius = 15_000;
+    const params = new URLSearchParams({ REQUEST: "GetFeatureInfo", SERVICE: "WMS", VERSION: "1.3.0", LAYERS: satelliteProduct.id, QUERY_LAYERS: satelliteProduct.id, STYLES: "", FORMAT: "image/png", INFO_FORMAT: "application/json", TIME: currentFrameTime, WIDTH: "64", HEIGHT: "64", I: "32", J: "32", CRS: "EPSG:3857", BBOX: `${longitude - radius},${latitude - radius},${longitude + radius},${latitude + radius}` });
+    setPointValue({ status: "checking" });
+    void fetch(`/api/eumetsat?${params.toString()}`, { signal: controller.signal }).then(async (response) => {
+      if (!response.ok) throw new Error(`GetFeatureInfo: ${response.status}`);
+      return (await response.text()).trim();
+    }).then((detail) => {
+      if (controller.signal.aborted) return;
+      if (!detail || /no\s+features|serviceexception|exception/i.test(detail)) setPointValue({ status: "unavailable" });
+      else setPointValue({ status: "available", detail: detail.slice(0, 420) });
+    }).catch(() => { if (!controller.signal.aborted) setPointValue({ status: "unavailable" }); });
+    return () => controller.abort();
+  }, [activeSource, area.lat, area.lon, currentFrameTime, satelliteProduct]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -164,7 +188,7 @@ export default function Home() {
       <div className="workspaceHeading"><div><p>ИССЛЕДОВАНИЕ СОБЫТИЯ · РЕАЛЬНЫЕ КАДРЫ И МЕТАДАННЫЕ</p><h2>{area.name.toUpperCase()} <small>{formatCoordinates(area)}</small></h2></div><span className={`sourceState ${activeDiagnostics.state === "LAYER_LIVE" ? "" : "offline"}`}><i /> {activeDiagnostics.state.replaceAll("_", " ")}</span></div>
       <div className="sourceSwitch" role="group" aria-label="Категория слоя"><button className={activeSource === "rainviewer" ? "active" : ""} onClick={() => { setFallback(undefined); setActiveSource("rainviewer"); }}>РАДАРЫ</button><button className={activeSource === "eumetsat" ? "active" : ""} onClick={() => { setFallback(undefined); setSatelliteId(catalog?.preferred.infrared ?? satelliteId); setActiveSource("eumetsat"); }}>СПУТНИК</button><button disabled title="Молнии не входят в Этап 1">МОЛНИИ · ЭТАП 2</button></div>
       {fallback ? <p className="fallbackNotice">FALLBACK · {fallback}</p> : null}<p className="liveDiagnostic">{diagnostic}</p>
-      <div className="mapGrid"><MeteoMap area={area} layer={activeLayer} onPick={setArea} onSelectionMode={setSelectionMode} onLayerDiagnostics={onLayerDiagnostics} coverageVisible={coverageVisible} /><ProductSelector category={activeSource === "rainviewer" ? "radar" : "satellite"} products={activeSource === "rainviewer" ? [{ ...RADAR_PRODUCT, supportedTimes: rain?.frames.map((frame) => frame.time) ?? [], units: "Визуальная шкала отражаемости", dataKind: "visualization" }] : satelliteProducts} selected={activeSource === "rainviewer" ? RADAR_PRODUCT.id : satelliteProduct?.id} onSelected={(id) => { setFallback(undefined); if (activeSource === "eumetsat") setSatelliteId(id); }} opacity={opacity} onOpacity={setOpacity} diagnostics={activeDiagnostics} apiState={apiState[activeSource]} buildVersion={buildVersion} area={area} layer={activeLayer} coverageVisible={coverageVisible} onCoverageVisible={setCoverageVisible} /></div>
+      <div className="mapGrid"><MeteoMap area={area} layer={activeLayer} onPick={setArea} onSelectionMode={setSelectionMode} onLayerDiagnostics={onLayerDiagnostics} coverageVisible={coverageVisible} /><ProductSelector category={activeSource === "rainviewer" ? "radar" : "satellite"} products={activeSource === "rainviewer" ? [{ ...RADAR_PRODUCT, supportedTimes: rain?.frames.map((frame) => frame.time) ?? [], units: "Визуальная шкала отражаемости", dataKind: "visualization" }] : satelliteProducts} selected={activeSource === "rainviewer" ? RADAR_PRODUCT.id : satelliteProduct?.id} onSelected={(id) => { setFallback(undefined); if (activeSource === "eumetsat") setSatelliteId(id); }} opacity={opacity} onOpacity={setOpacity} diagnostics={activeDiagnostics} apiState={apiState[activeSource]} buildVersion={buildVersion} area={area} layer={activeLayer} coverageVisible={coverageVisible} onCoverageVisible={setCoverageVisible} pointValue={pointValue} /></div>
       <Timeline frames={frames} {...playback} />
     </section>
     <section className="lowerGrid" id="comparison"><ComparisonPanel frames={frames} frameA={comparisonFrameA} frameB={comparisonFrameB} onFrameA={setComparisonFrameA} onFrameB={setComparisonFrameB} imageUrlForFrame={imageUrlForFrame} sourceLabel={activeSource === "rainviewer" ? "RainViewer XYZ raster" : "EUMETView WMS"} /><div className="quickRead"><p>ИССЛЕДОВАНИЕ СОБЫТИЯ</p><b>{selectedTitle}</b><span>Точка: {formatCoordinates(area)}<br />Начало: {frames[comparisonFrameA]?.time ?? "—"}<br />Конец: {frames[comparisonFrameB]?.time ?? "—"}<br />Сравнение использует реальные кадры. Сохраните конфигурацию и заметку в кейс ниже.</span></div></section>
